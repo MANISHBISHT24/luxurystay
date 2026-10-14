@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /my-stays
+Disallow: /booking/
+Disallow: /bookings/
+Disallow: /sign-in
+Disallow: /sign-up

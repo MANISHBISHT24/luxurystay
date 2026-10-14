@@ -1,6 +1,6 @@
-# [Project name]
+# The Serein
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A premium Kerala resort booking experience with database-backed room search, expiring booking holds, guest stays, and protected hotel operations.
 
 ## Run & Operate
 

@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Luxury Stays"
+description = "A premium hotel and resort booking platform with live room search, secure booking, guest accounts, and hotel administration."
+version = "1.0.0"
+id = "artifacts/luxury-stays"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22031
+
+[services.development]
+run = "pnpm --filter @workspace/luxury-stays run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/luxury-stays", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/luxury-stays/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22031"
+BASE_PATH = "/"
