@@ -1,6 +1,6 @@
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react';
+import { createContext, useContext, type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
-import { ClerkProvider, Show, SignIn, SignUp, useClerk } from '@clerk/react';
+import { ClerkProvider as RealClerkProvider, Show as RealShow, SignIn as RealSignIn, SignUp as RealSignUp, useClerk as useRealClerk } from '@clerk/react';
 import { publishableKeyFromHost } from '@clerk/react/internal';
 import { shadcn } from '@clerk/themes';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, Check, Clock3, Compass, Menu, Minus, Plus, Send, ShieldCheck, Sparkles, Waves, X } from 'lucide-react';
@@ -18,19 +18,131 @@ import {
 import type { Booking, BookingInput, GetRoomTypesParams, ListAdminBookingsParams, RoomType } from '@workspace/api-client-react';
 import { Link, Redirect, Route, Router as WouterRouter, Switch, useLocation, useRoute } from 'wouter';
 
+function isValidClerkKey(key: string | undefined): boolean {
+  if (!key || typeof key !== 'string') return false;
+  if (!key.startsWith('pk_test_') && !key.startsWith('pk_live_')) return false;
+  if (key.includes('REPLIT_MANAGED') || key.includes('placeholder')) return false;
+  try {
+    const raw = key.replace(/^pk_(test|live)_/, '');
+    const decoded = atob(raw);
+    return decoded.includes('.') && decoded.endsWith('$');
+  } catch {
+    return false;
+  }
+}
+
 const queryClient = new QueryClient();
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
-const rawClerkKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || 'pk_test_placeholder';
+const rawClerkKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || '';
 let clerkPubKey = '';
 try {
-  clerkPubKey = publishableKeyFromHost(window.location.hostname, rawClerkKey) || rawClerkKey;
+  clerkPubKey = (rawClerkKey && typeof window !== 'undefined' ? publishableKeyFromHost(window.location.hostname, rawClerkKey) : rawClerkKey) || rawClerkKey;
 } catch {
   clerkPubKey = rawClerkKey;
 }
+const hasValidClerk = isValidClerkKey(clerkPubKey);
 const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL;
 function stripBase(path: string) { return basePath && path.startsWith(basePath) ? path.slice(basePath.length) || '/' : path; }
-if (!import.meta.env.VITE_CLERK_PUBLISHABLE_KEY) {
-  console.warn('Missing VITE_CLERK_PUBLISHABLE_KEY in .env file. Running with development fallback.');
+
+interface DemoUser {
+  id: string;
+  fullName: string;
+  firstName: string;
+  lastName: string;
+  primaryEmailAddress: { emailAddress: string };
+  role: 'guest' | 'admin';
+}
+
+interface AuthContextType {
+  user: DemoUser | null;
+  isSignedIn: boolean;
+  signInAsDemo: (role?: 'guest' | 'admin') => void;
+  signOut: () => void;
+  addListener: (listener: (emission: { user: DemoUser | null }) => void) => () => void;
+}
+
+const AuthContext = createContext<AuthContextType>({
+  user: null,
+  isSignedIn: false,
+  signInAsDemo: () => {},
+  signOut: () => {},
+  addListener: () => () => {},
+});
+
+function DemoAuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<DemoUser | null>(() => {
+    try {
+      const saved = localStorage.getItem('serein_demo_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const listenersRef = useRef<Set<(emission: { user: DemoUser | null }) => void>>(new Set());
+
+  const notify = (newUser: DemoUser | null) => {
+    listenersRef.current.forEach(cb => {
+      try { cb({ user: newUser }); } catch {}
+    });
+  };
+
+  const signInAsDemo = (role: 'guest' | 'admin' = 'guest') => {
+    const newUser: DemoUser = {
+      id: role === 'admin' ? 'demo-admin-1' : 'demo-guest-1',
+      fullName: role === 'admin' ? 'Hotel Staff' : 'Aarav Patel',
+      firstName: role === 'admin' ? 'Hotel' : 'Aarav',
+      lastName: role === 'admin' ? 'Staff' : 'Patel',
+      primaryEmailAddress: {
+        emailAddress: role === 'admin' ? 'admin@theserein.com' : 'aarav.patel@example.com',
+      },
+      role,
+    };
+    try { localStorage.setItem('serein_demo_user', JSON.stringify(newUser)); } catch {}
+    setUser(newUser);
+    notify(newUser);
+  };
+
+  const signOut = () => {
+    try { localStorage.removeItem('serein_demo_user'); } catch {}
+    setUser(null);
+    notify(null);
+  };
+
+  const addListener = (cb: (emission: { user: DemoUser | null }) => void) => {
+    listenersRef.current.add(cb);
+    return () => {
+      listenersRef.current.delete(cb);
+    };
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, isSignedIn: !!user, signInAsDemo, signOut, addListener }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+function Show({ when, children }: { when: 'signed-in' | 'signed-out'; children: ReactNode }) {
+  if (hasValidClerk) {
+    return <RealShow when={when}>{children}</RealShow>;
+  }
+  const { isSignedIn } = useContext(AuthContext);
+  if (when === 'signed-in' && isSignedIn) return <>{children}</>;
+  if (when === 'signed-out' && !isSignedIn) return <>{children}</>;
+  return null;
+}
+
+function useClerk() {
+  if (hasValidClerk) {
+    return useRealClerk();
+  }
+  const auth = useContext(AuthContext);
+  return {
+    user: auth.user,
+    signOut: auth.signOut,
+    addListener: auth.addListener,
+  };
 }
 
 const appearance = {
@@ -88,6 +200,8 @@ function Button({ children, onClick, type = 'button', disabled = false, inverse 
 function Header() {
   const [open, setOpen] = useState(false);
   const [path] = useLocation();
+  const auth = useClerk();
+  const user = auth?.user;
   const links = [['Stay', '/rooms'], ['Our story', '/about'], ['The table', '/dining'], ['Experiences', '/experiences'], ['Journal', '/gallery']];
   return <header className="relative z-30 bg-[#f7f4ec]">
     <div className="page-wrap flex h-[82px] items-center justify-between">
@@ -96,10 +210,26 @@ function Header() {
         <span><span className="block serif text-[20px] leading-none tracking-[.04em]">the serein</span><span className="mt-1 block text-[8px] uppercase tracking-[.25em]">Kerala · by the sea</span></span>
       </Link>
       <nav className="hidden items-center gap-8 lg:flex" aria-label="Main navigation">{links.map(([label, href]) => <Link key={href} href={href} className="nav-link text-[11px] font-medium tracking-[.08em] text-[#45574c]" aria-current={path === href ? 'page' : undefined}>{label}</Link>)}</nav>
-      <div className="hidden items-center gap-5 lg:flex"><Link href="/my-stays" className="text-[11px] tracking-[.05em] text-[#45574c] hover:text-[#29483a]">My stays</Link><Link href="/sign-in" className="text-[11px] tracking-[.05em] text-[#45574c] hover:text-[#29483a]">Sign in</Link><Link href="/rooms" className="bg-[#29483a] px-5 py-3 text-[10px] uppercase tracking-[.16em] text-[#f8f5ed] transition-colors hover:bg-[#203a2f]">Find your quiet</Link></div>
+      <div className="hidden items-center gap-5 lg:flex">
+        <Link href="/my-stays" className="text-[11px] tracking-[.05em] text-[#45574c] hover:text-[#29483a]">My stays</Link>
+        {user ? (
+          <button type="button" onClick={() => auth.signOut()} className="text-[11px] tracking-[.05em] text-[#45574c] hover:text-[#29483a]">Sign out</button>
+        ) : (
+          <Link href="/sign-in" className="text-[11px] tracking-[.05em] text-[#45574c] hover:text-[#29483a]">Sign in</Link>
+        )}
+        <Link href="/rooms" className="bg-[#29483a] px-5 py-3 text-[10px] uppercase tracking-[.16em] text-[#f8f5ed] transition-colors hover:bg-[#203a2f]">Find your quiet</Link>
+      </div>
       <button type="button" onClick={() => setOpen(!open)} className="flex h-11 w-11 items-center justify-center text-[#29483a] lg:hidden" aria-expanded={open} aria-label={open ? 'Close menu' : 'Open menu'} data-testid="button-menu">{open ? <X /> : <Menu />}</button>
     </div>
-    {open && <nav className="absolute inset-x-0 top-full border-t border-[#e0dacd] bg-[#f7f4ec] px-6 py-5 shadow-lg lg:hidden" aria-label="Mobile navigation">{[...links, ['Facilities', '/facilities'], ['Offers', '/offers'], ['Contact', '/contact'], ['My stays', '/my-stays']].map(([label, href]) => <Link key={href} href={href} onClick={() => setOpen(false)} className="block border-b border-[#e4ded2] py-3 text-sm text-[#29483a]">{label}</Link>)}<Link href="/rooms" onClick={() => setOpen(false)} className="mt-5 block bg-[#29483a] p-4 text-center text-xs uppercase tracking-[.16em] text-[#f8f5ed]">Find your quiet</Link></nav>}
+    {open && <nav className="absolute inset-x-0 top-full border-t border-[#e0dacd] bg-[#f7f4ec] px-6 py-5 shadow-lg lg:hidden" aria-label="Mobile navigation">
+      {[...links, ['Facilities', '/facilities'], ['Offers', '/offers'], ['Contact', '/contact'], ['My stays', '/my-stays']].map(([label, href]) => <Link key={href} href={href} onClick={() => setOpen(false)} className="block border-b border-[#e4ded2] py-3 text-sm text-[#29483a]">{label}</Link>)}
+      {user ? (
+        <button type="button" onClick={() => { auth.signOut(); setOpen(false); }} className="block w-full border-b border-[#e4ded2] py-3 text-left text-sm text-[#29483a]">Sign out</button>
+      ) : (
+        <Link href="/sign-in" onClick={() => setOpen(false)} className="block border-b border-[#e4ded2] py-3 text-sm text-[#29483a]">Sign in</Link>
+      )}
+      <Link href="/rooms" onClick={() => setOpen(false)} className="mt-5 block bg-[#29483a] p-4 text-center text-xs uppercase tracking-[.16em] text-[#f8f5ed]">Find your quiet</Link>
+    </nav>}
   </header>;
 }
 function Footer() {
@@ -291,7 +421,60 @@ function LegalPage({ type }: { type: 'privacy' | 'terms' | 'cancellation' }) {
 }
 
 function NotFound() { return <Shell><div className="page-wrap flex min-h-[55vh] flex-col items-start justify-center"><p className="eyebrow text-[#8a764c]">A small detour</p><h1 className="serif mt-4 text-5xl">This path ends here.</h1><p className="mt-4 max-w-md text-sm leading-7 text-[#657268]">The page you’re looking for may have moved. The shore is still just ahead.</p><div className="mt-8"><ActionLink href="/">Back to The Serein</ActionLink></div></div></Shell>; }
-function AuthScreen({ signup = false }: { signup?: boolean }) { return <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-8 bg-[#f5f1e8] px-4 py-10"><Link href="/" className="flex items-center gap-3 text-[#29483a]"><span className="flex h-10 w-10 items-center justify-center rounded-full border border-[#b49a67] serif">S</span><span className="serif text-2xl">the serein</span></Link><div className="w-full max-w-[440px]">{signup ? <SignUp routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} /> : <SignIn routing="path" path={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} />}</div><p className="text-center text-xs tracking-wide text-[#657268]">A little quiet, whenever you’re ready.</p></div>; }
+function AuthScreen({ signup = false }: { signup?: boolean }) {
+  if (hasValidClerk) {
+    return <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-8 bg-[#f5f1e8] px-4 py-10"><Link href="/" className="flex items-center gap-3 text-[#29483a]"><span className="flex h-10 w-10 items-center justify-center rounded-full border border-[#b49a67] serif">S</span><span className="serif text-2xl">the serein</span></Link><div className="w-full max-w-[440px]">{signup ? <RealSignUp routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} /> : <RealSignIn routing="path" path={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} />}</div><p className="text-center text-xs tracking-wide text-[#657268]">A little quiet, whenever you’re ready.</p></div>;
+  }
+  const { signInAsDemo } = useContext(AuthContext);
+  const [, setLocation] = useLocation();
+  return (
+    <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-8 bg-[#f5f1e8] px-4 py-10">
+      <Link href="/" className="flex items-center gap-3 text-[#29483a]">
+        <span className="flex h-10 w-10 items-center justify-center rounded-full border border-[#b49a67] serif text-lg">S</span>
+        <span className="serif text-2xl">the serein</span>
+      </Link>
+      <div className="w-full max-w-[440px] rounded-2xl border border-[#d8d1c3] bg-[#fbf9f3] p-8 shadow-xl">
+        <div className="text-center">
+          <span className="inline-block rounded-full bg-[#29483a]/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#29483a]">
+            Preview / Demo Mode
+          </span>
+          <h2 className="mt-4 serif text-2xl text-[#29483a]">Welcome back</h2>
+          <p className="mt-2 text-xs text-[#6e776e]">
+            Choose an account to test room bookings, view reservations, or explore the manager dashboard.
+          </p>
+        </div>
+        <div className="mt-6 flex flex-col gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              signInAsDemo('guest');
+              setLocation('/my-stays');
+            }}
+            className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#29483a] py-3.5 text-[11px] font-semibold uppercase tracking-[.14em] text-[#f8f5ed] transition-colors hover:bg-[#203a2f]"
+          >
+            Sign in as Guest (Aarav Patel)
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              signInAsDemo('admin');
+              setLocation('/admin');
+            }}
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#29483a] bg-white py-3.5 text-[11px] font-semibold uppercase tracking-[.14em] text-[#29483a] transition-colors hover:bg-[#f2ede2]"
+          >
+            Sign in as Hotel Admin
+          </button>
+        </div>
+        <div className="mt-6 border-t border-[#e4ded2] pt-4 text-center">
+          <p className="text-[11px] leading-relaxed text-[#7a857c]">
+            To enable production Clerk auth, set a real <code className="rounded bg-[#e9e4d8] px-1 py-0.5 text-[10px]">VITE_CLERK_PUBLISHABLE_KEY</code> in <code className="rounded bg-[#e9e4d8] px-1 py-0.5 text-[10px]">.env</code>.
+          </p>
+        </div>
+      </div>
+      <p className="text-center text-xs tracking-wide text-[#657268]">A slower stay begins here.</p>
+    </div>
+  );
+}
 function HomeRedirect() { return <><Show when="signed-in"><Redirect to="/my-stays" /></Show><Show when="signed-out"><HomePage /></Show></>; }
 function ProtectedBookings() { return <><Show when="signed-in"><MyStaysPage /></Show><Show when="signed-out"><Redirect to="/sign-in" /></Show></>; }
 function ClerkCacheInvalidator() {
@@ -365,19 +548,61 @@ function TermsRoute() { return <LegalPage type="terms" />; }
 function CancellationRoute() { return <LegalPage type="cancellation" />; }
 function ClerkProviderWithRoutes() {
   const [location, setLocation] = useLocation();
-  return <ClerkProvider publishableKey={clerkPubKey} proxyUrl={clerkProxyUrl} appearance={appearance} signInUrl={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} localization={{ signIn: { start: { title: 'Welcome back', subtitle: 'Come back to the coast when you’re ready' } }, signUp: { start: { title: 'Make room for quiet', subtitle: 'A slower stay begins here' } } }} routerPush={to => setLocation(stripBase(to))} routerReplace={to => setLocation(stripBase(to), { replace: true })}>
-    <QueryClientProvider client={queryClient}><ClerkCacheInvalidator /><PageMeta /><RoutedErrorBoundary><Switch>
-      <Route path="/" component={HomeRedirect} />
-      <Route path="/sign-in/*?" component={() => <AuthScreen />} />
-      <Route path="/sign-up/*?" component={() => <AuthScreen signup />} />
-      <Route path="/about" component={AboutPage} /><Route path="/rooms" component={RoomsPage} /><Route path="/rooms/:roomTypeId" component={RoomRoute} />
-      <Route path="/facilities" component={() => <StaticPage kind="facilities" />} /><Route path="/dining" component={() => <StaticPage kind="dining" />} /><Route path="/experiences" component={() => <StaticPage kind="experiences" />} /><Route path="/gallery" component={() => <StaticPage kind="gallery" />} /><Route path="/offers" component={() => <StaticPage kind="offers" />} />
-      <Route path="/contact" component={ContactPage} /><Route path="/faq" component={FAQPage} /><Route path="/my-stays" component={ProtectedBookings} />
-      <Route path="/booking/:bookingId/confirmation" component={() => <ProtectedBookingRoute confirmation />} /><Route path="/bookings/:bookingId" component={() => <ProtectedBookingRoute />} />
-      <Route path="/cancellation" component={CancellationRoute} /><Route path="/privacy" component={PrivacyRoute} /><Route path="/terms" component={TermsRoute} />
-      <Route path="/admin" component={AdminPage} /><Route component={NotFound} />
-    </Switch></RoutedErrorBoundary><Toaster /></QueryClientProvider>
-  </ClerkProvider>;
+  const routes = (
+    <QueryClientProvider client={queryClient}>
+      <ClerkCacheInvalidator />
+      <PageMeta />
+      <RoutedErrorBoundary>
+        <Switch>
+          <Route path="/" component={HomeRedirect} />
+          <Route path="/sign-in/*?" component={() => <AuthScreen />} />
+          <Route path="/sign-up/*?" component={() => <AuthScreen signup />} />
+          <Route path="/about" component={AboutPage} />
+          <Route path="/rooms" component={RoomsPage} />
+          <Route path="/rooms/:roomTypeId" component={RoomRoute} />
+          <Route path="/facilities" component={() => <StaticPage kind="facilities" />} />
+          <Route path="/dining" component={() => <StaticPage kind="dining" />} />
+          <Route path="/experiences" component={() => <StaticPage kind="experiences" />} />
+          <Route path="/gallery" component={() => <StaticPage kind="gallery" />} />
+          <Route path="/offers" component={() => <StaticPage kind="offers" />} />
+          <Route path="/contact" component={ContactPage} />
+          <Route path="/faq" component={FAQPage} />
+          <Route path="/my-stays" component={ProtectedBookings} />
+          <Route path="/booking/:bookingId/confirmation" component={() => <ProtectedBookingRoute confirmation />} />
+          <Route path="/bookings/:bookingId" component={() => <ProtectedBookingRoute />} />
+          <Route path="/cancellation" component={CancellationRoute} />
+          <Route path="/privacy" component={PrivacyRoute} />
+          <Route path="/terms" component={TermsRoute} />
+          <Route path="/admin" component={AdminPage} />
+          <Route component={NotFound} />
+        </Switch>
+      </RoutedErrorBoundary>
+      <Toaster />
+    </QueryClientProvider>
+  );
+
+  if (hasValidClerk) {
+    return (
+      <RealClerkProvider
+        publishableKey={clerkPubKey}
+        proxyUrl={clerkProxyUrl}
+        appearance={appearance}
+        signInUrl={`${basePath}/sign-in`}
+        signUpUrl={`${basePath}/sign-up`}
+        localization={{ signIn: { start: { title: 'Welcome back', subtitle: 'Come back to the coast when you’re ready' } }, signUp: { start: { title: 'Make room for quiet', subtitle: 'A slower stay begins here' } } }}
+        routerPush={to => setLocation(stripBase(to))}
+        routerReplace={to => setLocation(stripBase(to), { replace: true })}
+      >
+        {routes}
+      </RealClerkProvider>
+    );
+  }
+
+  return (
+    <DemoAuthProvider>
+      {routes}
+    </DemoAuthProvider>
+  );
 }
 
 function App() {
