@@ -1,0 +1,11 @@
+.next
+node_modules
+work
+.env*
+!.env.example
+src/generated
+coverage
+*.log
+*.tsbuildinfo
+test-results
+outputs
