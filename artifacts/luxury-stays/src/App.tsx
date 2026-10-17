@@ -20,10 +20,18 @@ import { Link, Redirect, Route, Router as WouterRouter, Switch, useLocation, use
 
 const queryClient = new QueryClient();
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
-const clerkPubKey = publishableKeyFromHost(window.location.hostname, import.meta.env.VITE_CLERK_PUBLISHABLE_KEY);
+const rawClerkKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || 'pk_test_placeholder';
+let clerkPubKey = '';
+try {
+  clerkPubKey = publishableKeyFromHost(window.location.hostname, rawClerkKey) || rawClerkKey;
+} catch {
+  clerkPubKey = rawClerkKey;
+}
 const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL;
 function stripBase(path: string) { return basePath && path.startsWith(basePath) ? path.slice(basePath.length) || '/' : path; }
-if (!clerkPubKey) throw new Error('Missing VITE_CLERK_PUBLISHABLE_KEY in .env file');
+if (!import.meta.env.VITE_CLERK_PUBLISHABLE_KEY) {
+  console.warn('Missing VITE_CLERK_PUBLISHABLE_KEY in .env file. Running with development fallback.');
+}
 
 const appearance = {
   theme: shadcn,
